@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -15,6 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 STAGING = ROOT / "dist_staging"
 DIST = ROOT / "dist"
 NAME = "YOLO批量预标注"
+ARCHIVE = DIST / "yolo-auto-annotate-windows.zip"
 
 
 def inside_project(path: Path) -> Path:
@@ -73,11 +75,26 @@ def test_release(gui_dir: Path, model: Path, sample: Path) -> None:
     print(f"打包版自测通过: {result}")
 
 
+def create_archive() -> None:
+    release_dir = DIST / NAME
+    if not (release_dir / f"{NAME}.exe").is_file():
+        raise FileNotFoundError(f"缺少发布程序: {release_dir}")
+    with zipfile.ZipFile(ARCHIVE, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+        for path in sorted(release_dir.rglob("*")):
+            if path.is_file():
+                archive.write(path, path.relative_to(DIST).as_posix())
+    print(f"发布压缩包: {ARCHIVE}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="打包 PyQt 界面与 YOLO 推理进程")
     parser.add_argument("--model", type=Path, help="用于发布前自测的 YOLO .pt 模型")
     parser.add_argument("--sample", type=Path, help="用于发布前自测的单张图片")
+    parser.add_argument("--zip-only", action="store_true", help="仅重新压缩已有发布目录")
     args = parser.parse_args()
+    if args.zip_only:
+        create_archive()
+        return
     if bool(args.model) != bool(args.sample):
         parser.error("--model 和 --sample 必须一起提供")
     if args.model and not args.model.is_file():
@@ -109,6 +126,7 @@ def main() -> None:
         print(f"旧版已保留: {backup}")
     shutil.move(str(inside_project(gui_dir)), str(inside_project(official)))
     print(f"新版已发布: {official / (NAME + '.exe')}")
+    create_archive()
 
 
 if __name__ == "__main__":

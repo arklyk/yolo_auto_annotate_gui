@@ -7,4 +7,8 @@ if exist "%~dp0python.local.bat" (
 ) else (
     python "%~dp0app.py"
 )
-if errorlevel 1 pause
+if errorlevel 1 (
+    echo.
+    echo 如果提示缺少 PyQt5 或 ultralytics，请先双击 安装依赖.bat。
+    pause
+)

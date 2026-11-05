@@ -2,6 +2,12 @@
 
 Windows 图形工具：读取 Ultralytics YOLO 检测模型的类别，对图片批量推理，按类别设置阈值与输出名称，生成 YOLO TXT、复核预览图和可选的 CVAT ZIP。原图不会被修改；输出目录中的 `images/train` 是副本。预标注结果仍需人工复核。
 
+## 下载后直接使用
+
+请从 GitHub **Releases** 下载 `yolo-auto-annotate-windows.zip`，完整解压后运行 `YOLO批量预标注/YOLO批量预标注.exe`。不要只复制 EXE；同目录的 `_internal/` 和 `worker/` 也必须保留。模型 `.pt` 与待处理图片由使用者自行选择。
+
+GitHub 页面上的 **Code → Download ZIP** 下载的是源码，不包含打包程序。运行源码需要先安装 Python 和下述依赖。
+
 ## 目录
 
 | 路径 | 用途 |
@@ -11,12 +17,13 @@ Windows 图形工具：读取 Ultralytics YOLO 检测模型的类别，对图片
 | `yolo_auto_annotate.py` | 图片扫描、推理和导出逻辑；也可单独从命令行运行 |
 | `scripts/package_release.py`、`构建exe.bat` | Windows 可执行程序打包 |
 | `requirements.txt`、`requirements-build.txt` | 运行依赖与打包依赖 |
+| `安装依赖.bat`、`启动上位机.bat` | 从源码安装与启动 |
 | `tests/smoke_test.py` | 使用自备模型和图片进行端到端检查 |
 | `build/`、`dist/` | 本机生成的构建文件与发布文件，已由 `.gitignore` 排除 |
 
 ## 从源码运行
 
-建议使用 Python 3.10 或更新版本。在项目目录打开 PowerShell：
+建议使用 Python 3.10 或更新版本。Windows 用户可先双击 `安装依赖.bat`，完成后双击 `启动上位机.bat`。也可在项目目录打开 PowerShell：
 
 ```powershell
 python -m venv .venv
@@ -53,7 +60,7 @@ python yolo_auto_annotate.py "模型.pt" "图片目录" "输出目录"
 .\构建exe.bat --model "模型.pt" --sample "测试图片.jpg"
 ```
 
-脚本使用 PyInstaller 分别打包 GUI 和推理进程，并用提供的模型、图片做真实推理检查。若只想生成包，可直接运行 `构建exe.bat`，此时会跳过真实推理检查。发布时复制整个 `dist/YOLO批量预标注/`，包括其中的 `worker/`；不要只复制 EXE。旧发布包会留在 `dist/` 中。
+脚本使用 PyInstaller 分别打包 GUI 和推理进程，并用提供的模型、图片做真实推理检查。若只想生成包，可直接运行 `构建exe.bat`，此时会跳过真实推理检查。打包后会生成 `dist/yolo-auto-annotate-windows.zip`，可作为 GitHub Release 附件；也可以复制整个 `dist/YOLO批量预标注/`，包括其中的 `worker/`。不要只复制 EXE。旧发布包会留在 `dist/` 中。
 
 源码端到端检查：
 
