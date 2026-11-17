@@ -27,10 +27,11 @@ from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
     QProgressBar, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem,
-    QTextEdit, QVBoxLayout, QWidget,
+    QTextEdit, QVBoxLayout, QWidget, QListWidget,
 )
 
 from yolo_auto_annotate import OUTPUT_ROOT, RunConfig
+from video_inference import VIDEO_EXTENSIONS, VideoConfig
 
 
 class Job(QObject):
@@ -41,7 +42,7 @@ class Job(QObject):
     log_line = pyqtSignal(str)
     finished = pyqtSignal()
 
-    def __init__(self, model_path: str, config: RunConfig | None = None):
+    def __init__(self, model_path: str, config: RunConfig | VideoConfig | None = None):
         super().__init__()
         self.model_path = model_path
         self.config = config
@@ -64,11 +65,14 @@ class Job(QObject):
 
     def _execute(self, args: list[str]):
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
         process = subprocess.Popen(
             self.backend_command() + args,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace", bufsize=1,
             creationflags=creationflags,
+            env=env,
         )
         result = None
         diagnostics = []
@@ -112,12 +116,16 @@ class Job(QObject):
                         self.request_cancel()
                     payload = asdict(self.config)
                     for key in ("model_path", "input_dir", "output_root"):
-                        payload[key] = str(payload[key])
+                        if key in payload:
+                            payload[key] = str(payload[key])
+                    if isinstance(self.config, VideoConfig):
+                        payload["videos"] = [str(path) for path in self.config.videos]
                     config_path = job_dir / "config.json"
                     config_path.write_text(json.dumps({
                         "config": payload, "cancel_path": str(self.cancel_path),
                     }, ensure_ascii=False), encoding="utf-8")
-                    result = self._execute(["run", str(config_path)])
+                    action = "video" if isinstance(self.config, VideoConfig) else "run"
+                    result = self._execute([action, str(config_path)])
                     result["run_dir"] = Path(result["run_dir"])
                     if result["zip_path"]:
                         result["zip_path"] = Path(result["zip_path"])
@@ -132,7 +140,7 @@ class Job(QObject):
 class Window(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("YOLO 批量预标注")
+        self.setWindowTitle("YOLO 图片预标注与视频识别")
         self.resize(1000, 790)
         self.settings = QSettings("lyk", "yolo-auto-annotate")
         self.model_names: dict[int, str] = {}
@@ -140,17 +148,30 @@ class Window(QMainWindow):
         self.job = None
         self.thread = None
         self.last_output: Path | None = None
+        self.mode = "images"
 
         body = QWidget()
         self.setCentralWidget(body)
         layout = QVBoxLayout(body)
         layout.setSpacing(12)
-        title = QLabel("YOLO 批量预标注")
+        title = QLabel("YOLO 图片预标注与视频识别")
         title.setFont(QFont("Microsoft YaHei", 19, QFont.Bold))
         layout.addWidget(title)
         subtitle = QLabel("选择模型与原图，设置每类置信度和输出类别，然后批量生成 YOLO 标签及复核预览。")
         subtitle.setWordWrap(True)
+        self.subtitle = subtitle
         layout.addWidget(subtitle)
+
+        mode_row = QHBoxLayout()
+        self.images_mode_btn = QPushButton("图片预标注")
+        self.video_mode_btn = QPushButton("视频识别")
+        for button in (self.images_mode_btn, self.video_mode_btn):
+            button.setCheckable(True)
+            mode_row.addWidget(button)
+        mode_row.addStretch()
+        self.images_mode_btn.clicked.connect(lambda: self.switch_mode("images"))
+        self.video_mode_btn.clicked.connect(lambda: self.switch_mode("video"))
+        layout.addLayout(mode_row)
 
         paths = QGroupBox("输入与输出")
         form = QFormLayout(paths)
@@ -158,7 +179,26 @@ class Window(QMainWindow):
         self.input_edit = QLineEdit(self.settings.value("input", ""))
         self.output_edit = QLineEdit(self.settings.value("output", str(OUTPUT_ROOT)))
         form.addRow("模型 .pt", self._path_row(self.model_edit, self.choose_model, "读取类别"))
-        form.addRow("原图目录", self._path_row(self.input_edit, self.choose_input))
+        self.image_input_row = self._path_row(self.input_edit, self.choose_input)
+        form.addRow("原图目录", self.image_input_row)
+        self.image_input_label = form.labelForField(self.image_input_row)
+        self.video_input_row = QWidget()
+        video_input_layout = QVBoxLayout(self.video_input_row)
+        video_input_layout.setContentsMargins(0, 0, 0, 0)
+        video_buttons = QHBoxLayout()
+        add_video_btn = QPushButton("添加视频…")
+        add_video_btn.clicked.connect(self.choose_videos)
+        clear_video_btn = QPushButton("清空列表")
+        clear_video_btn.clicked.connect(self.clear_videos)
+        video_buttons.addWidget(add_video_btn)
+        video_buttons.addWidget(clear_video_btn)
+        video_buttons.addStretch()
+        video_input_layout.addLayout(video_buttons)
+        self.video_list = QListWidget()
+        self.video_list.setMinimumHeight(120)
+        video_input_layout.addWidget(self.video_list)
+        form.addRow("待识别视频", self.video_input_row)
+        self.video_input_label = form.labelForField(self.video_input_row)
         form.addRow("输出根目录", self._path_row(self.output_edit, self.choose_output))
         layout.addWidget(paths)
 
@@ -177,7 +217,26 @@ class Window(QMainWindow):
             control.setChecked(self.settings.value(key, "true") == "true")
             option_row.addWidget(control)
         option_row.addStretch()
+        self.image_options = options
         layout.addWidget(options)
+
+        self.video_options = QGroupBox("视频推理参数")
+        video_options_row = QHBoxLayout(self.video_options)
+        video_options_row.addWidget(QLabel("最低置信度"))
+        self.video_confidence = QDoubleSpinBox()
+        self.video_confidence.setRange(0.001, 1.0)
+        self.video_confidence.setDecimals(3)
+        self.video_confidence.setSingleStep(0.05)
+        self.video_confidence.setValue(float(self.settings.value("video_confidence", 0.25)))
+        video_options_row.addWidget(self.video_confidence)
+        video_options_row.addWidget(QLabel("推理尺寸"))
+        self.video_size = QSpinBox()
+        self.video_size.setRange(32, 4096)
+        self.video_size.setSingleStep(32)
+        self.video_size.setValue(int(self.settings.value("video_size", 640)))
+        video_options_row.addWidget(self.video_size)
+        video_options_row.addStretch()
+        layout.addWidget(self.video_options)
 
         class_group = QGroupBox("模型类别与输出设置")
         class_layout = QVBoxLayout(class_group)
@@ -191,6 +250,7 @@ class Window(QMainWindow):
         self.table.setColumnWidth(2, 260)
         self.table.setMinimumHeight(210)
         class_layout.addWidget(self.table)
+        self.class_group = class_group
         layout.addWidget(class_group, 1)
 
         action_row = QHBoxLayout()
@@ -216,6 +276,7 @@ class Window(QMainWindow):
         self.log.setMinimumHeight(120)
         layout.addWidget(self.log)
         self.model_edit.textChanged.connect(self.invalidate_model)
+        self.switch_mode("images")
         if Path(self.model_edit.text()).is_file():
             self.load_classes()
 
@@ -237,12 +298,50 @@ class Window(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "选择 YOLO 模型", self.model_edit.text(), "PyTorch 权重 (*.pt)")
         if path:
             self.model_edit.setText(path)
-            self.load_classes()
+            if self.mode == "images":
+                self.load_classes()
 
     def choose_input(self):
         path = QFileDialog.getExistingDirectory(self, "选择原图目录", self.input_edit.text())
         if path:
             self.input_edit.setText(path)
+
+    def choose_videos(self):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "选择一个或多个视频", "",
+            "视频文件 (*.mp4 *.avi *.mov *.mkv *.wmv *.m4v *.webm)",
+        )
+        existing = {self.video_list.item(i).text() for i in range(self.video_list.count())}
+        for path in paths:
+            if path not in existing:
+                self.video_list.addItem(path)
+                existing.add(path)
+
+    def clear_videos(self):
+        self.video_list.clear()
+
+    def switch_mode(self, mode: str):
+        if self.thread and self.thread.isRunning():
+            return
+        self.mode = mode
+        image_mode = mode == "images"
+        self.images_mode_btn.setChecked(image_mode)
+        self.video_mode_btn.setChecked(not image_mode)
+        self.image_input_row.setVisible(image_mode)
+        self.image_input_label.setVisible(image_mode)
+        self.video_input_row.setVisible(not image_mode)
+        self.video_input_label.setVisible(not image_mode)
+        self.image_options.setVisible(image_mode)
+        self.class_group.setVisible(image_mode)
+        self.video_options.setVisible(not image_mode)
+        self.start_btn.setText("开始预标注" if image_mode else "开始视频识别")
+        self.cancel_btn.setText("停止（当前图片完成后）" if image_mode else "停止视频识别")
+        self.status.setText("准备预标注图片" if image_mode else "准备识别视频")
+        self.subtitle.setText(
+            "选择模型与原图，设置每类置信度和输出类别，然后批量生成 YOLO 标签及复核预览。"
+            if image_mode else
+            "选择一个或多个视频和检测模型，设置置信度，批量生成带检测框的 MP4 结果。"
+        )
 
     def choose_output(self):
         path = QFileDialog.getExistingDirectory(self, "选择输出根目录", self.output_edit.text())
@@ -271,6 +370,8 @@ class Window(QMainWindow):
         self.thread.finished.connect(self.job_finished)
         self.start_btn.setEnabled(False)
         self.cancel_btn.setEnabled(config is not None)
+        self.images_mode_btn.setEnabled(False)
+        self.video_mode_btn.setEnabled(False)
         self.thread.start()
 
     def load_classes(self):
@@ -367,28 +468,58 @@ class Window(QMainWindow):
             class_map=mapping, class_confidence=confidences,
         )
 
+    def _collect_video(self) -> VideoConfig:
+        model_path = Path(self.model_edit.text().strip())
+        if not model_path.is_file():
+            raise ValueError("请选择有效的 YOLO .pt 模型")
+        videos = [Path(self.video_list.item(i).text()) for i in range(self.video_list.count())]
+        if not videos:
+            raise ValueError("请添加至少一个视频")
+        for video in videos:
+            if not video.is_file() or video.suffix.lower() not in VIDEO_EXTENSIONS:
+                raise ValueError(f"视频不存在或格式不支持: {video}")
+        output_text = self.output_edit.text().strip()
+        if not output_text:
+            raise ValueError("请选择输出目录")
+        if self.video_size.value() % 32:
+            raise ValueError("推理尺寸必须是 32 的倍数")
+        self.settings.setValue("model", str(model_path))
+        self.settings.setValue("output", output_text)
+        self.settings.setValue("video_confidence", self.video_confidence.value())
+        self.settings.setValue("video_size", self.video_size.value())
+        return VideoConfig(
+            model_path=model_path, videos=videos, output_root=Path(output_text),
+            confidence=self.video_confidence.value(), image_size=self.video_size.value(),
+        )
+
     def start_batch(self):
         try:
-            config = self._collect()
+            config = self._collect() if self.mode == "images" else self._collect_video()
         except Exception as exc:
             QMessageBox.warning(self, "配置需要检查", str(exc))
             return
         self.bar.setValue(0)
         self.log.clear()
-        self.status.setText("正在处理图片…")
+        self.status.setText("正在处理图片…" if self.mode == "images" else "正在识别视频…")
         self._launch(config)
 
     def show_progress(self, done, total, message):
         self.bar.setMaximum(total)
         self.bar.setValue(done)
-        self.status.setText(f"已处理 {done}/{total} 张")
-        self.log.append(f"[{done}/{total}] {message}")
+        if self.mode == "video":
+            self.status.setText(f"已完成 {done}/{total} 个视频；{message}")
+            if "完成" in message or "失败" in message:
+                self.log.append(f"[{done}/{total}] {message}")
+        else:
+            self.status.setText(f"已处理 {done}/{total} 张")
+            self.log.append(f"[{done}/{total}] {message}")
 
     def show_summary(self, summary):
         self.last_output = summary.run_dir
         self.open_btn.setEnabled(True)
         state = "已停止" if summary.cancelled else "处理完成"
-        self.status.setText(f"{state}：成功 {summary.succeeded}，失败 {summary.failed}，标注框 {summary.box_count}")
+        noun = "视频" if getattr(summary, "mode", "images") == "video" else "图片"
+        self.status.setText(f"{state}：成功 {summary.succeeded} 个{noun}，失败 {summary.failed} 个，检测框 {summary.box_count}")
         self.log.append(f"结果：{summary.run_dir}")
         if summary.failed:
             self.log.append(f"失败详情：{summary.run_dir / 'errors.log'}")
@@ -403,13 +534,15 @@ class Window(QMainWindow):
     def job_finished(self):
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
+        self.images_mode_btn.setEnabled(True)
+        self.video_mode_btn.setEnabled(True)
         self.thread = None
         self.job = None
 
     def cancel(self):
         if self.job:
             self.job.request_cancel()
-            self.status.setText("收到停止请求，当前图片处理完后结束…")
+            self.status.setText("收到停止请求，正在结束当前任务…")
             self.cancel_btn.setEnabled(False)
 
     def open_output(self):
@@ -427,6 +560,8 @@ class Window(QMainWindow):
 def main():
     if len(sys.argv) == 5 and sys.argv[1] == "--self-test":
         sys.exit(self_test(Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])))
+    if len(sys.argv) == 5 and sys.argv[1] == "--self-test-video":
+        sys.exit(self_test_video(Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])))
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     window = Window()
@@ -470,6 +605,37 @@ def self_test(model: Path, sample: Path, report: Path) -> int:
             if summary.succeeded != 1 or summary.failed != 0:
                 raise RuntimeError(f"单张推理未成功: {summary.succeeded} 成功 / {summary.failed} 失败")
             result = {"ok": True, "classes": names, "box_count": summary.box_count}
+        report.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        return 0
+    except Exception:
+        report.write_text(json.dumps({"ok": False, "error": traceback.format_exc()},
+                                     ensure_ascii=False, indent=2), encoding="utf-8")
+        return 1
+    finally:
+        app.quit()
+
+
+def self_test_video(model: Path, sample_video: Path, report: Path) -> int:
+    """Check packaged GUI-to-worker video inference without loading cv2 in the GUI."""
+    app = QApplication([])
+    report.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with tempfile.TemporaryDirectory(prefix="video_self_test_", dir=report.parent) as folder:
+            summaries, errors = [], []
+            job = Job(str(model), VideoConfig(
+                model_path=model, videos=[sample_video], output_root=Path(folder) / "中文输出",
+                confidence=0.1, image_size=320,
+            ))
+            job.completed.connect(summaries.append)
+            job.failed.connect(errors.append)
+            job.run()
+            if errors or len(summaries) != 1:
+                raise RuntimeError("\n".join(errors) or "没有收到视频识别结果")
+            summary = summaries[0]
+            outputs = list(summary.run_dir.glob("*.mp4"))
+            if summary.succeeded != 1 or summary.failed or len(outputs) != 1 or outputs[0].stat().st_size == 0:
+                raise RuntimeError(f"视频自测失败: {summary}")
+            result = {"ok": True, "videos": summary.succeeded, "box_count": summary.box_count}
         report.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         return 0
     except Exception:

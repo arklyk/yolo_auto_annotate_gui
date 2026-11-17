@@ -23,6 +23,7 @@ modeldata/
 output/
 outputs/
 run_*/
+video_run_*/
 *.log
 
 # Credentials and machine-specific settings

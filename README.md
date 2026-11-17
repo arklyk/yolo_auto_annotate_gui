@@ -1,6 +1,6 @@
 # YOLO 批量预标注
 
-Windows 图形工具：读取 Ultralytics YOLO 检测模型的类别，对图片批量推理，按类别设置阈值与输出名称，生成 YOLO TXT、复核预览图和可选的 CVAT ZIP。原图不会被修改；输出目录中的 `images/train` 是副本。预标注结果仍需人工复核。
+Windows 图形工具：使用 Ultralytics YOLO 检测模型完成图片批量预标注或视频识别。图片模式生成 YOLO TXT、复核预览图和可选的 CVAT ZIP；视频模式生成带检测框的 MP4。原始图片与视频不会被修改，预标注结果仍需人工复核。
 
 ## 下载后直接使用
 
@@ -15,6 +15,7 @@ GitHub 页面上的 **Code → Download ZIP** 下载的是源码，不包含打�
 | `app.py` | PyQt5 图形界面 |
 | `backend.py` | 独立推理进程，隔离 GUI 与 YOLO 的原生库 |
 | `yolo_auto_annotate.py` | 图片扫描、推理和导出逻辑；也可单独从命令行运行 |
+| `video_inference.py` | 多视频逐帧识别和 MP4 导出 |
 | `scripts/package_release.py`、`构建exe.bat` | Windows 可执行程序打包 |
 | `requirements.txt`、`requirements-build.txt` | 运行依赖与打包依赖 |
 | `安装依赖.bat`、`启动上位机.bat` | 从源码安装与启动 |
@@ -33,7 +34,7 @@ python -m venv .venv
 
 也可双击 `启动上位机.bat`；它优先使用本机专用的 `python.local.bat`，其次使用本目录的 `.venv`，最后使用系统 `python`。如要使用已有 Conda 环境，可在项目根目录创建不会被提交的 `python.local.bat`，内容例如 `@"C:\path\to\python.exe" %*`，并按自己的实际路径修改。首次安装 Ultralytics 等依赖可能耗时较长。模型权重和图片由用户自行提供，不随源码分发。
 
-## 使用方法
+## 图片预标注
 
 1. 选择 `.pt` 检测模型、原图目录和输出根目录，点击“读取类别”。
 2. 勾选需要的类别，为每类设置输出名称和最低置信度。相同输出名称会合并为同一个新类别。
@@ -51,6 +52,12 @@ python yolo_auto_annotate.py "模型.pt" "图片目录" "输出目录"
 
 此命令使用每类 `0.25` 的默认置信度；需要按类别调整时使用图形界面。
 
+## 视频识别
+
+1. 点击顶部“视频识别”按钮，选择检测模型 `.pt`、输出根目录，点击“添加视频…”选择一个或多个视频。支持 MP4、AVI、MOV、MKV、WMV、M4V 和 WebM 输入，能否解码取决于本机 OpenCV 的编解码器支持。
+2. 设置统一的最低置信度和推理尺寸，点击“开始视频识别”。进度栏显示已完成的视频数量和当前帧数；“停止视频识别”会在下一帧前停止，已完成的视频保留，未完成的视频删除。
+3. 每次运行会创建 `输出根目录/video_run_时间戳/`，其中是按选择顺序编号的 MP4 结果和 `errors.log`。结果视频保留原视频的尺寸与帧率；当前版本不保留原音轨。
+
 ## 打包与检查
 
 在 Windows 的同一 Python 环境安装打包依赖后运行：
@@ -60,12 +67,13 @@ python yolo_auto_annotate.py "模型.pt" "图片目录" "输出目录"
 .\构建exe.bat --model "模型.pt" --sample "测试图片.jpg"
 ```
 
-脚本使用 PyInstaller 分别打包 GUI 和推理进程，并用提供的模型、图片做真实推理检查。若只想生成包，可直接运行 `构建exe.bat`，此时会跳过真实推理检查。打包后会生成 `dist/yolo-auto-annotate-windows.zip`，可作为 GitHub Release 附件；也可以复制整个 `dist/YOLO批量预标注/`，包括其中的 `worker/`。不要只复制 EXE。旧发布包会留在 `dist/` 中。
+脚本使用 PyInstaller 分别打包 GUI 和推理进程，并用提供的模型、图片检查图片预标注和视频识别。若只想生成包，可直接运行 `构建exe.bat`，此时会跳过真实推理检查。打包后会生成 `dist/yolo-auto-annotate-windows.zip`，可作为 GitHub Release 附件；也可以复制整个 `dist/YOLO批量预标注/`，包括其中的 `worker/`。不要只复制 EXE。旧发布包会留在 `dist/` 中。
 
 源码端到端检查：
 
 ```powershell
 python tests/smoke_test.py "模型.pt" "测试图片.jpg"
+python tests/video_smoke_test.py "模型.pt" "测试图片.jpg"
 ```
 
 ## 准备公开仓库

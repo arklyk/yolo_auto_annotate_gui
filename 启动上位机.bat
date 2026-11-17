@@ -1,5 +1,7 @@
 @echo off
 setlocal
+chcp 65001 >nul
+set "PYTHONIOENCODING=utf-8"
 if exist "%~dp0python.local.bat" (
     call "%~dp0python.local.bat" "%~dp0app.py"
 ) else if exist "%~dp0.venv\Scripts\python.exe" (

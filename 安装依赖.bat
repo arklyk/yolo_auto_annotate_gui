@@ -1,5 +1,7 @@
 @echo off
 setlocal
+chcp 65001 >nul
+set "PYTHONIOENCODING=utf-8"
 cd /d "%~dp0"
 where python >nul 2>nul
 if errorlevel 1 (
@@ -11,9 +13,15 @@ if not exist ".venv\Scripts\python.exe" (
     python -m venv .venv
     if errorlevel 1 goto :failed
 )
-".venv\Scripts\python.exe" -m pip install -r requirements.txt
+set "REQUIREMENTS=requirements.txt"
+if /i "%~1"=="build" set "REQUIREMENTS=requirements-build.txt"
+".venv\Scripts\python.exe" -m pip install -r "%REQUIREMENTS%"
 if errorlevel 1 goto :failed
-echo 依赖安装完成，请双击 启动上位机.bat。
+if /i "%~1"=="build" (
+    echo 打包依赖已安装。现在可以运行 构建exe.bat。
+) else (
+    echo 运行依赖已安装。现在可以运行 启动上位机.bat。
+)
 pause
 exit /b 0
 :failed

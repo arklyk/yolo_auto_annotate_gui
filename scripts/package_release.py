@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import argparse
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -74,6 +75,30 @@ def test_release(gui_dir: Path, model: Path, sample: Path) -> None:
         raise RuntimeError(f"打包版自测失败: {result}")
     print(f"打包版自测通过: {result}")
 
+    import cv2
+    import numpy as np
+
+    frame = cv2.imdecode(np.fromfile(str(sample), dtype=np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        raise RuntimeError(f"无法读取自测图片: {sample}")
+    frame = cv2.resize(frame, (320, 240))
+    video = STAGING / "测试视频.mp4"
+    writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 5, (320, 240))
+    if not writer.isOpened():
+        raise RuntimeError("无法创建自测视频")
+    for _ in range(2):
+        writer.write(frame)
+    writer.release()
+    video_report = STAGING / "video_self_test.json"
+    subprocess.run(
+        [str(gui_dir / f"{NAME}.exe"), "--self-test-video", str(model), str(video), str(video_report)],
+        cwd=ROOT, env=env, check=True, timeout=180,
+    )
+    video_result = json.loads(video_report.read_text(encoding="utf-8"))
+    if not video_result.get("ok"):
+        raise RuntimeError(f"打包版视频自测失败: {video_result}")
+    print(f"打包版视频自测通过: {video_result}")
+
 
 def create_archive() -> None:
     release_dir = DIST / NAME
@@ -95,6 +120,8 @@ def main() -> None:
     if args.zip_only:
         create_archive()
         return
+    if importlib.util.find_spec("PyInstaller") is None:
+        parser.error("缺少 PyInstaller；请先运行 安装依赖.bat build")
     if bool(args.model) != bool(args.sample):
         parser.error("--model 和 --sample 必须一起提供")
     if args.model and not args.model.is_file():

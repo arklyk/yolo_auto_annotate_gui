@@ -8,7 +8,13 @@ import sys
 import traceback
 from pathlib import Path
 
+if sys.stdout is not None:
+    sys.stdout.reconfigure(encoding="utf-8")
+if sys.stderr is not None:
+    sys.stderr.reconfigure(encoding="utf-8")
+
 from yolo_auto_annotate import RunConfig, _model_names, run_batch  # noqa: E402
+from video_inference import VideoConfig, run_videos
 
 PREFIX = "@@YOLO_GUI_JSON@@"
 
@@ -30,6 +36,15 @@ def config_from_json(path: Path) -> tuple[RunConfig, Path]:
         for k, v in data["class_confidence"].items()
     }
     return RunConfig(**data), Path(payload["cancel_path"])
+
+
+def video_config_from_json(path: Path) -> tuple[VideoConfig, Path]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    data = payload["config"]
+    data["model_path"] = Path(data["model_path"])
+    data["output_root"] = Path(data["output_root"])
+    data["videos"] = [Path(video) for video in data["videos"]]
+    return VideoConfig(**data), Path(payload["cancel_path"])
 
 
 def main() -> int:
@@ -58,6 +73,23 @@ def main() -> int:
             "failed": summary.failed, "box_count": summary.box_count,
             "cancelled": summary.cancelled,
             "zip_path": str(summary.zip_path) if summary.zip_path else None,
+        })
+        return 0
+    if action == "video":
+        config, cancel_path = video_config_from_json(Path(sys.argv[2]))
+        with contextlib.redirect_stdout(sys.stderr):
+            summary = run_videos(
+                config,
+                lambda done, total, message: emit({
+                    "type": "progress", "done": done, "total": total, "message": message,
+                }),
+                cancel_path.exists,
+            )
+        emit({
+            "type": "complete", "mode": "video", "run_dir": str(summary.run_dir),
+            "total": summary.total, "succeeded": summary.succeeded,
+            "failed": summary.failed, "box_count": summary.box_count,
+            "cancelled": summary.cancelled, "zip_path": None,
         })
         return 0
     raise ValueError(f"未知操作: {action}")
