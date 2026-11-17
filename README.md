@@ -20,7 +20,7 @@ GitHub 页面上的 **Code → Download ZIP** 下载的是源码，不包含打�
 | `requirements.txt`、`requirements-build.txt` | 运行依赖与打包依赖 |
 | `安装依赖.bat`、`启动上位机.bat` | 从源码安装与启动 |
 | `tests/smoke_test.py` | 使用自备模型和图片进行端到端检查 |
-| `build/`、`dist/` | 本机生成的构建文件与发布文件，已由 `.gitignore` 排除 |
+| `dist/` | 本机发布目录及 ZIP，已由 `.gitignore` 排除 |
 
 ## 从源码运行
 
@@ -67,7 +67,7 @@ python yolo_auto_annotate.py "模型.pt" "图片目录" "输出目录"
 .\构建exe.bat --model "模型.pt" --sample "测试图片.jpg"
 ```
 
-脚本使用 PyInstaller 分别打包 GUI 和推理进程，并用提供的模型、图片检查图片预标注和视频识别。若只想生成包，可直接运行 `构建exe.bat`，此时会跳过真实推理检查。打包后会生成 `dist/yolo-auto-annotate-windows.zip`，可作为 GitHub Release 附件；也可以复制整个 `dist/YOLO批量预标注/`，包括其中的 `worker/`。不要只复制 EXE。旧发布包会留在 `dist/` 中。
+脚本使用 PyInstaller 分别打包 GUI 和推理进程，并用提供的模型、图片检查图片预标注和视频识别。若只想生成包，可直接运行 `构建exe.bat`，此时会跳过真实推理检查。成功后会生成 `dist/yolo-auto-annotate-windows.zip` 并清理构建中间文件；也可以复制整个 `dist/YOLO批量预标注/`，包括其中的 `worker/`。不要只复制 EXE。旧发布包会留在 `dist/` 中，确认新版可用后可手动删除。
 
 源码端到端检查：
 
@@ -81,3 +81,9 @@ python tests/video_smoke_test.py "模型.pt" "测试图片.jpg"
 本项目源码按 [GNU AGPL-3.0](LICENSE) 发布。Ultralytics 使用 AGPL-3.0，PyQt5 的开源版本使用 GPLv3；如分发打包 EXE，还须遵守其随包依赖的许可证和源码提供义务。模型权重与训练图片不随项目发布，其分发权需另行核对。模型还需与实际安装的 Ultralytics 版本兼容。
 
 仓库仅应包含源码、脚本、许可证和说明。请在首次推送前检查 `git status` 与 `git ls-files`，确认没有模型权重、图片数据、输出结果、构建目录、密钥或个人信息。
+
+## 维护者发布更新
+
+代码更新：在项目目录检查 `git status`，然后提交改动并执行 `git push origin main`。GitHub 的 **Code → Download ZIP** 会随分支更新，但只包含源码。
+
+Windows 免安装版更新：运行上面的打包命令并确认自测通过，再为新版本创建 GitHub Release，将 `dist/yolo-auto-annotate-windows.zip` 作为附件上传。仅推送源码不会更新已有 Release 的附件。

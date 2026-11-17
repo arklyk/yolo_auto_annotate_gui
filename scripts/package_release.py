@@ -16,6 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 STAGING = ROOT / "dist_staging"
 DIST = ROOT / "dist"
+BUILD = ROOT / "build"
 NAME = "YOLO批量预标注"
 ARCHIVE = DIST / "yolo-auto-annotate-windows.zip"
 
@@ -28,11 +29,12 @@ def inside_project(path: Path) -> Path:
 
 
 def build(script: str, name: str, *, gui: bool, excludes: list[str]) -> None:
+    (BUILD / "specs").mkdir(parents=True, exist_ok=True)
     command = [
         sys.executable, "-m", "PyInstaller", "--noconfirm", "--onedir",
         "--windowed" if gui else "--console", "--name", name,
         "--paths", str(ROOT), "--distpath", str(STAGING),
-        "--workpath", str(ROOT / "build" / name),
+        "--workpath", str(BUILD / name), "--specpath", str(BUILD / "specs"),
     ]
     if not gui:
         command += ["--collect-all", "ultralytics"]
@@ -154,6 +156,10 @@ def main() -> None:
     shutil.move(str(inside_project(gui_dir)), str(inside_project(official)))
     print(f"新版已发布: {official / (NAME + '.exe')}")
     create_archive()
+    for generated in (STAGING, BUILD):
+        if generated.exists():
+            shutil.rmtree(inside_project(generated))
+    print("已清理打包中间文件")
 
 
 if __name__ == "__main__":
