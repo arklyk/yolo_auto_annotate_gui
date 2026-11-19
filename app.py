@@ -141,7 +141,7 @@ class Window(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("YOLO 图片预标注与视频识别")
-        self.resize(1000, 790)
+        self.resize(1000, 850)
         self.settings = QSettings("lyk", "yolo-auto-annotate")
         self.model_names: dict[int, str] = {}
         self.loaded_path = ""
@@ -221,7 +221,8 @@ class Window(QMainWindow):
         layout.addWidget(options)
 
         self.video_options = QGroupBox("视频推理参数")
-        video_options_row = QHBoxLayout(self.video_options)
+        video_options_layout = QVBoxLayout(self.video_options)
+        video_options_row = QHBoxLayout()
         video_options_row.addWidget(QLabel("最低置信度"))
         self.video_confidence = QDoubleSpinBox()
         self.video_confidence.setRange(0.001, 1.0)
@@ -236,6 +237,33 @@ class Window(QMainWindow):
         self.video_size.setValue(int(self.settings.value("video_size", 640)))
         video_options_row.addWidget(self.video_size)
         video_options_row.addStretch()
+        video_options_layout.addLayout(video_options_row)
+        video_export_row = QHBoxLayout()
+        self.video_skip_empty = QCheckBox("结果视频跳过无检测画面")
+        self.video_skip_empty.setChecked(self.settings.value("video_skip_empty", "true") == "true")
+        self.video_dataset = QCheckBox("保存数据集原始帧和 YOLO 标签")
+        self.video_dataset.setChecked(self.settings.value("video_dataset", "true") == "true")
+        video_export_row.addWidget(self.video_skip_empty)
+        video_export_row.addWidget(self.video_dataset)
+        video_export_row.addStretch()
+        video_options_layout.addLayout(video_export_row)
+        video_dataset_row = QHBoxLayout()
+        video_dataset_row.addWidget(QLabel("数据集保存间隔"))
+        self.video_interval = QDoubleSpinBox()
+        self.video_interval.setRange(0, 60)
+        self.video_interval.setDecimals(1)
+        self.video_interval.setSingleStep(0.5)
+        self.video_interval.setSuffix(" 秒")
+        self.video_interval.setValue(float(self.settings.value("video_interval", 1.0)))
+        self.video_interval.setToolTip("首个有检测结果的帧立即保存；0 秒表示保存每个有检测结果的帧")
+        self.video_interval.setEnabled(self.video_dataset.isChecked())
+        self.video_dataset.toggled.connect(self.video_interval.setEnabled)
+        video_dataset_row.addWidget(self.video_interval)
+        self.video_overwrite = QCheckBox("替换原 MP4（保留备份；无音轨）")
+        self.video_overwrite.setChecked(self.settings.value("video_overwrite", "false") == "true")
+        video_dataset_row.addWidget(self.video_overwrite)
+        video_dataset_row.addStretch()
+        video_options_layout.addLayout(video_dataset_row)
         layout.addWidget(self.video_options)
 
         class_group = QGroupBox("模型类别与输出设置")
@@ -340,7 +368,7 @@ class Window(QMainWindow):
         self.subtitle.setText(
             "选择模型与原图，设置每类置信度和输出类别，然后批量生成 YOLO 标签及复核预览。"
             if image_mode else
-            "选择一个或多个视频和检测模型，设置置信度，批量生成带检测框的 MP4 结果。"
+            "逐帧检测视频；可跳过无检测画面，并导出未画框的原始帧及 YOLO 标签。"
         )
 
     def choose_output(self):
@@ -478,6 +506,10 @@ class Window(QMainWindow):
         for video in videos:
             if not video.is_file() or video.suffix.lower() not in VIDEO_EXTENSIONS:
                 raise ValueError(f"视频不存在或格式不支持: {video}")
+        if self.video_overwrite.isChecked() and any(video.suffix.lower() != ".mp4" for video in videos):
+            raise ValueError("替换原视频目前仅支持 MP4；请取消该选项或只选择 MP4")
+        if self.video_overwrite.isChecked() and not self.video_skip_empty.isChecked():
+            raise ValueError("替换原视频时必须勾选跳过无检测画面")
         output_text = self.output_edit.text().strip()
         if not output_text:
             raise ValueError("请选择输出目录")
@@ -487,9 +519,17 @@ class Window(QMainWindow):
         self.settings.setValue("output", output_text)
         self.settings.setValue("video_confidence", self.video_confidence.value())
         self.settings.setValue("video_size", self.video_size.value())
+        for key, control in (("video_skip_empty", self.video_skip_empty),
+                             ("video_dataset", self.video_dataset),
+                             ("video_overwrite", self.video_overwrite)):
+            self.settings.setValue(key, "true" if control.isChecked() else "false")
+        self.settings.setValue("video_interval", self.video_interval.value())
         return VideoConfig(
             model_path=model_path, videos=videos, output_root=Path(output_text),
             confidence=self.video_confidence.value(), image_size=self.video_size.value(),
+            save_dataset=self.video_dataset.isChecked(), skip_empty=self.video_skip_empty.isChecked(),
+            save_interval_seconds=self.video_interval.value(),
+            overwrite_original=self.video_overwrite.isChecked(),
         )
 
     def start_batch(self):
@@ -520,6 +560,8 @@ class Window(QMainWindow):
         state = "已停止" if summary.cancelled else "处理完成"
         noun = "视频" if getattr(summary, "mode", "images") == "video" else "图片"
         self.status.setText(f"{state}：成功 {summary.succeeded} 个{noun}，失败 {summary.failed} 个，检测框 {summary.box_count}")
+        if getattr(summary, "mode", "images") == "video":
+            self.log.append(f"保留视频帧：{summary.kept_frames}；数据集图片：{summary.saved_images}")
         self.log.append(f"结果：{summary.run_dir}")
         if summary.failed:
             self.log.append(f"失败详情：{summary.run_dir / 'errors.log'}")
@@ -624,7 +666,7 @@ def self_test_video(model: Path, sample_video: Path, report: Path) -> int:
             summaries, errors = [], []
             job = Job(str(model), VideoConfig(
                 model_path=model, videos=[sample_video], output_root=Path(folder) / "中文输出",
-                confidence=0.1, image_size=320,
+                confidence=0.1, image_size=320, save_dataset=False, skip_empty=False,
             ))
             job.completed.connect(summaries.append)
             job.failed.connect(errors.append)

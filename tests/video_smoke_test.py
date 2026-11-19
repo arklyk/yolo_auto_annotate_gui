@@ -24,7 +24,7 @@ def main() -> int:
     if frame is None:
         raise ValueError(f"无法读取测试图片: {args.image}")
     frame = cv2.resize(frame, (320, 240))
-    with TemporaryDirectory(dir=Path(__file__).resolve().parent) as folder:
+    with TemporaryDirectory() as folder:
         root = Path(folder)
         videos = []
         for index, count in ((1, 3), (2, 2)):
@@ -38,7 +38,10 @@ def main() -> int:
 
         app = QApplication([])
         results, errors = [], []
-        job = Job(str(args.model), VideoConfig(args.model, videos, root / "识别结果", 0.1, 320))
+        job = Job(str(args.model), VideoConfig(
+            args.model, videos, root / "识别结果", 0.1, 320,
+            save_dataset=False, skip_empty=False,
+        ))
         job.completed.connect(results.append)
         job.failed.connect(errors.append)
         job.run()
@@ -58,8 +61,28 @@ def main() -> int:
             reader.release()
         print("PASS: two annotated videos, expected frame counts and dimensions")
 
+        filtered_results, filtered_errors = [], []
+        filtered_job = Job(str(args.model), VideoConfig(
+            args.model, videos, root / "筛选结果", 0.1, 320,
+        ))
+        filtered_job.completed.connect(filtered_results.append)
+        filtered_job.failed.connect(filtered_errors.append)
+        filtered_job.run()
+        assert not filtered_errors, filtered_errors
+        assert len(filtered_results) == 1
+        filtered = filtered_results[0]
+        assert filtered.succeeded == 2 and filtered.failed == 0
+        images = list((filtered.run_dir / "dataset" / "images").glob("*.jpg"))
+        labels = list((filtered.run_dir / "dataset" / "labels").glob("*.txt"))
+        assert len(images) == len(labels) == filtered.saved_images
+        assert filtered.saved_images <= filtered.kept_frames
+        print("PASS: real model filtering and dataset export")
+
         cancelled_results, cancel_errors = [], []
-        cancel_job = Job(str(args.model), VideoConfig(args.model, videos, root / "cancel", 0.1, 320))
+        cancel_job = Job(str(args.model), VideoConfig(
+            args.model, videos, root / "cancel", 0.1, 320,
+            save_dataset=False, skip_empty=False,
+        ))
         cancel_job.progress.connect(
             lambda done, total, message: cancel_job.request_cancel()
             if done == 0 and "帧" in message else None
