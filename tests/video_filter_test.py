@@ -1,12 +1,12 @@
-"""Check filtering, dataset export, cancellation and MP4 replacement without model weights."""
+"""Check matched filtered videos, CVAT export and frame progress without model weights."""
 
 from __future__ import annotations
 
 import sys
+import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -14,13 +14,13 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.modules["ultralytics"] = SimpleNamespace(YOLO=lambda _: FakeModel())
 
-import video_inference  # noqa: E402
 from video_inference import VideoConfig, run_videos  # noqa: E402
 
 
 class FakeBoxes:
     def __init__(self, detected: bool):
         self.cls = np.array([0] if detected else [])
+        self.conf = np.array([0.9] if detected else [])
         self.xywhn = np.array([[0.5, 0.5, 0.25, 0.25]] if detected else []).reshape(-1, 4)
 
     def __len__(self):
@@ -47,11 +47,16 @@ def make_video(path: Path, bright_frames: set[int], count: int = 10) -> None:
     writer.release()
 
 
-def frame_count(path: Path) -> int:
+def video_frames(path: Path) -> list[np.ndarray]:
     reader = cv2.VideoCapture(str(path))
+    assert reader.isOpened(), path
     try:
-        assert reader.isOpened(), path
-        return int(reader.get(cv2.CAP_PROP_FRAME_COUNT))
+        frames = []
+        while True:
+            ok, frame = reader.read()
+            if not ok:
+                return frames
+            frames.append(frame)
     finally:
         reader.release()
 
@@ -65,72 +70,64 @@ def main() -> None:
         empty = root / "empty.mp4"
         make_video(mixed, {2, 3, 7, 8})
         make_video(empty, set())
+        original_bytes = mixed.read_bytes()
+        events: list[tuple[int, int, str]] = []
 
-        summary = run_videos(VideoConfig(model, [mixed, empty], root / "filtered"))
+        summary = run_videos(VideoConfig(model, [mixed, empty], root / "filtered"),
+                             lambda done, total, message: events.append((done, total, message)))
         assert (summary.succeeded, summary.failed, summary.kept_frames, summary.saved_images) == (2, 0, 4, 2)
-        assert frame_count(mixed) == 10
-        outputs = list(summary.run_dir.glob("*.mp4"))
-        assert len(outputs) == 1 and frame_count(outputs[0]) == 4
-        images = sorted((summary.run_dir / "dataset" / "images").glob("*.jpg"))
-        labels = sorted((summary.run_dir / "dataset" / "labels").glob("*.txt"))
+        assert mixed.read_bytes() == original_bytes
+        assert any(0 < done < 1000 and total == 2000 for done, total, _ in events)
+        assert events[-1][0] == events[-1][1] == 2000
+        outputs = sorted(summary.run_dir.glob("*.mp4"))
+        assert len(outputs) == 2
+        raw = next(path for path in outputs if path.stem.endswith("_filtered"))
+        annotated = next(path for path in outputs if path.stem.endswith("_annotated"))
+        raw_frames, annotated_frames = video_frames(raw), video_frames(annotated)
+        assert len(raw_frames) == len(annotated_frames) == 4
+        assert np.all(raw_frames[0][0, 0] > 200)
+        assert annotated_frames[0][0, 0, 2] > annotated_frames[0][0, 0, 0] + 100
+
+        images = sorted((summary.run_dir / "images" / "train").glob("*.jpg"))
+        labels = sorted((summary.run_dir / "labels" / "train").glob("*.txt"))
         assert len(images) == len(labels) == 2
-        assert [p.stem for p in images] == [p.stem for p in labels]
-        assert [int(p.stem.rsplit("_", 1)[1]) for p in images] == [2, 7]
+        assert [path.stem for path in images] == [path.stem for path in labels]
+        assert [int(path.stem.rsplit("_", 1)[1]) for path in images] == [2, 7]
         assert all(np.all(cv2.imread(str(path))[0, 0] > 200) for path in images)
         assert all(label.read_text().strip() == "0 0.500000 0.500000 0.250000 0.250000" for label in labels)
-        assert (summary.run_dir / "dataset" / "classes.txt").read_text().strip() == "object"
+        assert (summary.run_dir / "train.txt").read_text().splitlines() == [
+            f"images/train/{path.name}" for path in images
+        ]
+        assert '0: "object"' in (summary.run_dir / "data.yaml").read_text()
+        assert summary.zip_path and summary.zip_path.is_file()
+        with zipfile.ZipFile(summary.zip_path) as archive:
+            assert archive.testzip() is None
+            assert set(archive.namelist()) == {
+                "data.yaml", "train.txt",
+                *(f"images/train/{path.name}" for path in images),
+                *(f"labels/train/{path.name}" for path in labels),
+            }
 
-        overwritten = run_videos(VideoConfig(
-            model, [mixed], root / "overwrite", save_dataset=False, overwrite_original=True,
+        all_frames = run_videos(VideoConfig(
+            model, [mixed], root / "all_frames", save_interval_seconds=0,
         ))
-        assert overwritten.succeeded == 1 and frame_count(mixed) == 4, (
-            overwritten, (overwritten.run_dir / "errors.log").read_text(encoding="utf-8")
-        )
-        backups = list(root.glob("mixed.original_*.mp4"))
-        assert len(backups) == 1 and frame_count(backups[0]) == 10
-        assert frame_count(next(overwritten.run_dir.glob("*.mp4"))) == 4
-
-        rollback = root / "rollback.mp4"
-        make_video(rollback, {2, 3, 7, 8})
-        real_replace = video_inference.os.replace
-
-        def fail_second_rename(source: Path, destination: Path) -> None:
-            if Path(source).name.startswith(".rollback.filtered_"):
-                raise OSError("simulated replacement failure")
-            real_replace(source, destination)
-
-        with patch.object(video_inference.os, "replace", side_effect=fail_second_rename):
-            failed = run_videos(VideoConfig(
-                model, [rollback], root / "failed_replace", save_dataset=False,
-                overwrite_original=True,
-            ))
-        assert failed.failed == 1 and frame_count(rollback) == 10
-        assert not list(root.glob("rollback.original_*.mp4"))
-        assert not list(root.glob(".rollback.filtered_*.mp4"))
-
-        no_detection = run_videos(VideoConfig(
-            model, [empty], root / "empty_replace", save_dataset=False,
-            overwrite_original=True,
-        ))
-        assert no_detection.succeeded == 1 and frame_count(empty) == 10
-        assert not list(root.glob("empty.original_*.mp4"))
+        assert all_frames.saved_images == 4
 
         cancel = False
 
         def progress(_done: int, _total: int, message: str) -> None:
             nonlocal cancel
-            if "已检测 1 帧" in message:
+            if "已检测 2 帧" in message:
                 cancel = True
 
-        cancelled = run_videos(VideoConfig(
-            model, [mixed], root / "cancel", save_interval_seconds=0,
-        ), progress, lambda: cancel)
+        cancelled = run_videos(VideoConfig(model, [mixed], root / "cancel"),
+                               progress, lambda: cancel)
         assert cancelled.cancelled and cancelled.succeeded == 0
         assert not list(cancelled.run_dir.glob("*.mp4"))
-        assert not list((cancelled.run_dir / "dataset" / "images").glob("*.jpg"))
-        assert not list((cancelled.run_dir / "dataset" / "labels").glob("*.txt"))
+        assert not list((cancelled.run_dir / "images" / "train").glob("*.jpg"))
+        assert not list((cancelled.run_dir / "labels" / "train").glob("*.txt"))
 
-    print("PASS: filtered video, dataset interval, empty input, safe replacement, cancellation")
+    print("PASS: paired filtered videos, CVAT ZIP, frame progress, original preserved, cancellation")
 
 
 if __name__ == "__main__":

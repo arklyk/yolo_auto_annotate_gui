@@ -1,4 +1,4 @@
-"""Exercise two videos through the GUI-to-worker protocol."""
+"""Exercise paired videos and CVAT export through the GUI-to-worker protocol."""
 
 import argparse
 import os
@@ -37,55 +37,47 @@ def main() -> int:
             videos.append(path)
 
         app = QApplication([])
-        results, errors = [], []
-        job = Job(str(args.model), VideoConfig(
-            args.model, videos, root / "识别结果", 0.1, 320,
-            save_dataset=False, skip_empty=False,
-        ))
+        results, errors, progress_events = [], [], []
+        job = Job(str(args.model), VideoConfig(args.model, videos, root / "识别结果", 0.1, 320))
+        job.progress.connect(lambda done, total, _message: progress_events.append((done, total)))
         job.completed.connect(results.append)
         job.failed.connect(errors.append)
         job.run()
-        app.quit()
         assert not errors, errors
         assert len(results) == 1
         summary = results[0]
         assert summary.succeeded == 2 and summary.failed == 0 and not summary.cancelled
-        outputs = sorted(summary.run_dir.glob("*.mp4"))
-        assert len(outputs) == 2, (outputs, (summary.run_dir / "errors.log").read_text(encoding="utf-8"))
-        for path, expected in zip(outputs, (3, 2)):
-            reader = cv2.VideoCapture(str(path))
-            assert reader.isOpened()
-            assert int(reader.get(cv2.CAP_PROP_FRAME_COUNT)) == expected
-            assert int(reader.get(cv2.CAP_PROP_FRAME_WIDTH)) == 320
-            assert int(reader.get(cv2.CAP_PROP_FRAME_HEIGHT)) == 240
-            reader.release()
-        print("PASS: two annotated videos, expected frame counts and dimensions")
+        assert any(0 < done < total for done, total in progress_events)
+        assert progress_events[-1] == (2000, 2000)
 
-        filtered_results, filtered_errors = [], []
-        filtered_job = Job(str(args.model), VideoConfig(
-            args.model, videos, root / "筛选结果", 0.1, 320,
-        ))
-        filtered_job.completed.connect(filtered_results.append)
-        filtered_job.failed.connect(filtered_errors.append)
-        filtered_job.run()
-        assert not filtered_errors, filtered_errors
-        assert len(filtered_results) == 1
-        filtered = filtered_results[0]
-        assert filtered.succeeded == 2 and filtered.failed == 0
-        images = list((filtered.run_dir / "dataset" / "images").glob("*.jpg"))
-        labels = list((filtered.run_dir / "dataset" / "labels").glob("*.txt"))
-        assert len(images) == len(labels) == filtered.saved_images
-        assert filtered.saved_images <= filtered.kept_frames
-        print("PASS: real model filtering and dataset export")
+        outputs = sorted(summary.run_dir.glob("*.mp4"))
+        assert len(outputs) % 2 == 0
+        for raw in summary.run_dir.glob("*_filtered.mp4"):
+            annotated = raw.with_name(raw.name.replace("_filtered.mp4", "_annotated.mp4"))
+            assert annotated.is_file()
+            counts = []
+            for path in (raw, annotated):
+                reader = cv2.VideoCapture(str(path))
+                assert reader.isOpened()
+                counts.append(int(reader.get(cv2.CAP_PROP_FRAME_COUNT)))
+                assert int(reader.get(cv2.CAP_PROP_FRAME_WIDTH)) == 320
+                assert int(reader.get(cv2.CAP_PROP_FRAME_HEIGHT)) == 240
+                reader.release()
+            assert counts[0] == counts[1] and counts[0] > 0
+        images = list((summary.run_dir / "images" / "train").glob("*.jpg"))
+        labels = list((summary.run_dir / "labels" / "train").glob("*.txt"))
+        assert len(images) == len(labels) == summary.saved_images
+        assert (summary.run_dir / "data.yaml").is_file()
+        assert (summary.run_dir / "train.txt").is_file()
+        if images:
+            assert summary.zip_path and summary.zip_path.is_file()
+        print("PASS: paired videos, CVAT files and frame progress through GUI worker")
 
         cancelled_results, cancel_errors = [], []
-        cancel_job = Job(str(args.model), VideoConfig(
-            args.model, videos, root / "cancel", 0.1, 320,
-            save_dataset=False, skip_empty=False,
-        ))
+        cancel_job = Job(str(args.model), VideoConfig(args.model, videos, root / "cancel", 0.1, 320))
         cancel_job.progress.connect(
-            lambda done, total, message: cancel_job.request_cancel()
-            if done == 0 and "帧" in message else None
+            lambda _done, _total, message: cancel_job.request_cancel()
+            if "已检测 1 帧" in message else None
         )
         cancel_job.completed.connect(cancelled_results.append)
         cancel_job.failed.connect(cancel_errors.append)
@@ -93,7 +85,9 @@ def main() -> int:
         assert not cancel_errors, cancel_errors
         assert len(cancelled_results) == 1 and cancelled_results[0].cancelled
         assert not list(cancelled_results[0].run_dir.glob("*.mp4"))
-        print("PASS: cancellation removes incomplete video")
+        assert not list((cancelled_results[0].run_dir / "images" / "train").glob("*.jpg"))
+        app.quit()
+        print("PASS: cancellation removes incomplete video and dataset images")
     return 0
 
 

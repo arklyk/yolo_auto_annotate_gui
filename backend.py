@@ -89,7 +89,8 @@ def main() -> int:
             "type": "complete", "mode": "video", "run_dir": str(summary.run_dir),
             "total": summary.total, "succeeded": summary.succeeded,
             "failed": summary.failed, "box_count": summary.box_count,
-            "cancelled": summary.cancelled, "zip_path": None,
+            "cancelled": summary.cancelled,
+            "zip_path": str(summary.zip_path) if summary.zip_path else None,
             "kept_frames": summary.kept_frames, "saved_images": summary.saved_images,
         })
         return 0

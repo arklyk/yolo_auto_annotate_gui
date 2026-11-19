@@ -239,11 +239,9 @@ class Window(QMainWindow):
         video_options_row.addStretch()
         video_options_layout.addLayout(video_options_row)
         video_export_row = QHBoxLayout()
-        self.video_skip_empty = QCheckBox("结果视频跳过无检测画面")
-        self.video_skip_empty.setChecked(self.settings.value("video_skip_empty", "true") == "true")
+        video_export_row.addWidget(QLabel("输出筛选原画视频和画框视频（均跳过无检测画面）"))
         self.video_dataset = QCheckBox("保存数据集原始帧和 YOLO 标签")
         self.video_dataset.setChecked(self.settings.value("video_dataset", "true") == "true")
-        video_export_row.addWidget(self.video_skip_empty)
         video_export_row.addWidget(self.video_dataset)
         video_export_row.addStretch()
         video_options_layout.addLayout(video_export_row)
@@ -259,9 +257,6 @@ class Window(QMainWindow):
         self.video_interval.setEnabled(self.video_dataset.isChecked())
         self.video_dataset.toggled.connect(self.video_interval.setEnabled)
         video_dataset_row.addWidget(self.video_interval)
-        self.video_overwrite = QCheckBox("替换原 MP4（保留备份；无音轨）")
-        self.video_overwrite.setChecked(self.settings.value("video_overwrite", "false") == "true")
-        video_dataset_row.addWidget(self.video_overwrite)
         video_dataset_row.addStretch()
         video_options_layout.addLayout(video_dataset_row)
         layout.addWidget(self.video_options)
@@ -368,7 +363,7 @@ class Window(QMainWindow):
         self.subtitle.setText(
             "选择模型与原图，设置每类置信度和输出类别，然后批量生成 YOLO 标签及复核预览。"
             if image_mode else
-            "逐帧检测视频；可跳过无检测画面，并导出未画框的原始帧及 YOLO 标签。"
+            "逐帧检测视频；生成同帧数的筛选原画和画框视频，并可导出 CVAT 数据集。"
         )
 
     def choose_output(self):
@@ -506,10 +501,6 @@ class Window(QMainWindow):
         for video in videos:
             if not video.is_file() or video.suffix.lower() not in VIDEO_EXTENSIONS:
                 raise ValueError(f"视频不存在或格式不支持: {video}")
-        if self.video_overwrite.isChecked() and any(video.suffix.lower() != ".mp4" for video in videos):
-            raise ValueError("替换原视频目前仅支持 MP4；请取消该选项或只选择 MP4")
-        if self.video_overwrite.isChecked() and not self.video_skip_empty.isChecked():
-            raise ValueError("替换原视频时必须勾选跳过无检测画面")
         output_text = self.output_edit.text().strip()
         if not output_text:
             raise ValueError("请选择输出目录")
@@ -519,17 +510,13 @@ class Window(QMainWindow):
         self.settings.setValue("output", output_text)
         self.settings.setValue("video_confidence", self.video_confidence.value())
         self.settings.setValue("video_size", self.video_size.value())
-        for key, control in (("video_skip_empty", self.video_skip_empty),
-                             ("video_dataset", self.video_dataset),
-                             ("video_overwrite", self.video_overwrite)):
-            self.settings.setValue(key, "true" if control.isChecked() else "false")
+        self.settings.setValue("video_dataset", "true" if self.video_dataset.isChecked() else "false")
         self.settings.setValue("video_interval", self.video_interval.value())
         return VideoConfig(
             model_path=model_path, videos=videos, output_root=Path(output_text),
             confidence=self.video_confidence.value(), image_size=self.video_size.value(),
-            save_dataset=self.video_dataset.isChecked(), skip_empty=self.video_skip_empty.isChecked(),
+            save_dataset=self.video_dataset.isChecked(),
             save_interval_seconds=self.video_interval.value(),
-            overwrite_original=self.video_overwrite.isChecked(),
         )
 
     def start_batch(self):
@@ -544,13 +531,16 @@ class Window(QMainWindow):
         self._launch(config)
 
     def show_progress(self, done, total, message):
-        self.bar.setMaximum(total)
-        self.bar.setValue(done)
         if self.mode == "video":
-            self.status.setText(f"已完成 {done}/{total} 个视频；{message}")
+            self.bar.setRange(0, total)
+            if total:
+                self.bar.setValue(done)
+            self.status.setText(message)
             if "完成" in message or "失败" in message:
-                self.log.append(f"[{done}/{total}] {message}")
+                self.log.append(message)
         else:
+            self.bar.setMaximum(total)
+            self.bar.setValue(done)
             self.status.setText(f"已处理 {done}/{total} 张")
             self.log.append(f"[{done}/{total}] {message}")
 
@@ -666,7 +656,7 @@ def self_test_video(model: Path, sample_video: Path, report: Path) -> int:
             summaries, errors = [], []
             job = Job(str(model), VideoConfig(
                 model_path=model, videos=[sample_video], output_root=Path(folder) / "中文输出",
-                confidence=0.1, image_size=320, save_dataset=False, skip_empty=False,
+                confidence=0.1, image_size=320,
             ))
             job.completed.connect(summaries.append)
             job.failed.connect(errors.append)
@@ -675,7 +665,10 @@ def self_test_video(model: Path, sample_video: Path, report: Path) -> int:
                 raise RuntimeError("\n".join(errors) or "没有收到视频识别结果")
             summary = summaries[0]
             outputs = list(summary.run_dir.glob("*.mp4"))
-            if summary.succeeded != 1 or summary.failed or len(outputs) != 1 or outputs[0].stat().st_size == 0:
+            if summary.succeeded != 1 or summary.failed or len(outputs) not in (0, 2):
+                raise RuntimeError(f"视频自测失败: {summary}")
+            if outputs and (any(path.stat().st_size == 0 for path in outputs)
+                            or not summary.zip_path or not summary.zip_path.is_file()):
                 raise RuntimeError(f"视频自测失败: {summary}")
             result = {"ok": True, "videos": summary.succeeded, "box_count": summary.box_count}
         report.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
