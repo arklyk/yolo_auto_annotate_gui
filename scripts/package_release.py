@@ -151,7 +151,9 @@ def main() -> None:
     if official.exists():
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup = DIST / f"{NAME}_旧版_{stamp}"
-        shutil.move(str(inside_project(official)), str(inside_project(backup)))
+        # Rename on the same volume so a Windows file lock cannot trigger a
+        # copy-and-delete fallback that leaves the previous release incomplete.
+        inside_project(official).rename(inside_project(backup))
         print(f"旧版已保留: {backup}")
     shutil.move(str(inside_project(gui_dir)), str(inside_project(official)))
     print(f"新版已发布: {official / (NAME + '.exe')}")

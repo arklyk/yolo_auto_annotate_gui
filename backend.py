@@ -44,6 +44,9 @@ def video_config_from_json(path: Path) -> tuple[VideoConfig, Path]:
     data["model_path"] = Path(data["model_path"])
     data["output_root"] = Path(data["output_root"])
     data["videos"] = [Path(video) for video in data["videos"]]
+    for key in ("old_class_names", "new_class_names", "class_map"):
+        if data.get(key) is not None:
+            data[key] = {int(k): v for k, v in data[key].items()}
     return VideoConfig(**data), Path(payload["cancel_path"])
 
 

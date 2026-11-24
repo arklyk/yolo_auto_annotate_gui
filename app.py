@@ -355,7 +355,7 @@ class Window(QMainWindow):
         self.video_input_row.setVisible(not image_mode)
         self.video_input_label.setVisible(not image_mode)
         self.image_options.setVisible(image_mode)
-        self.class_group.setVisible(image_mode)
+        self.table.setColumnHidden(3, not image_mode)
         self.video_options.setVisible(not image_mode)
         self.start_btn.setText("开始预标注" if image_mode else "开始视频识别")
         self.cancel_btn.setText("停止（当前图片完成后）" if image_mode else "停止视频识别")
@@ -439,7 +439,7 @@ class Window(QMainWindow):
         self.class_hint.setText(f"已读取 {len(names)} 个模型类别。输出类别按本表第一次出现的名称从 0 连续编号。")
         self.status.setText("模型类别已读取")
 
-    def _collect(self):
+    def _collect_classes(self):
         if not self.model_names or self.model_edit.text().strip() != self.loaded_path:
             raise ValueError("请先读取当前模型的类别")
         selected = []
@@ -464,6 +464,11 @@ class Window(QMainWindow):
             confidences[class_id] = conf
         if not selected:
             raise ValueError("至少勾选一个类别")
+        key = hashlib.sha256(self.loaded_path.encode("utf-8")).hexdigest()
+        self.settings.setValue(f"classes/{key}", json.dumps(saved, ensure_ascii=False))
+        return dict(enumerate(target_names)), selected, mapping, confidences
+
+    def _collect(self):
         model_path = Path(self.model_edit.text().strip())
         input_dir = Path(self.input_edit.text().strip())
         output_text = self.output_edit.text().strip()
@@ -474,8 +479,7 @@ class Window(QMainWindow):
             raise ValueError("原图目录不存在")
         if not output_text:
             raise ValueError("请选择输出目录")
-        key = hashlib.sha256(self.loaded_path.encode("utf-8")).hexdigest()
-        self.settings.setValue(f"classes/{key}", json.dumps(saved, ensure_ascii=False))
+        names, selected, mapping, confidences = self._collect_classes()
         for setting, value in (("model", str(model_path)), ("input", str(input_dir)),
                                ("output", str(output_root)), ("size", self.size_spin.value()),
                                ("recursive", str(self.recursive.isChecked()).lower()),
@@ -487,7 +491,7 @@ class Window(QMainWindow):
             image_size=self.size_spin.value(), recursive=self.recursive.isChecked(),
             save_preview=self.preview.isChecked(), create_cvat_zip=self.cvat_zip.isChecked(),
             old_class_names=self.model_names.copy(),
-            new_class_names=dict(enumerate(target_names)), select_classes=selected,
+            new_class_names=names, select_classes=selected,
             class_map=mapping, class_confidence=confidences,
         )
 
@@ -506,6 +510,7 @@ class Window(QMainWindow):
             raise ValueError("请选择输出目录")
         if self.video_size.value() % 32:
             raise ValueError("推理尺寸必须是 32 的倍数")
+        names, _, mapping, _ = self._collect_classes()
         self.settings.setValue("model", str(model_path))
         self.settings.setValue("output", output_text)
         self.settings.setValue("video_confidence", self.video_confidence.value())
@@ -517,6 +522,7 @@ class Window(QMainWindow):
             confidence=self.video_confidence.value(), image_size=self.video_size.value(),
             save_dataset=self.video_dataset.isChecked(),
             save_interval_seconds=self.video_interval.value(),
+            old_class_names=self.model_names.copy(), new_class_names=names, class_map=mapping,
         )
 
     def start_batch(self):

@@ -1,6 +1,7 @@
 """Exercise paired videos and CVAT export through the GUI-to-worker protocol."""
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -38,7 +39,18 @@ def main() -> int:
 
         app = QApplication([])
         results, errors, progress_events = [], [], []
-        job = Job(str(args.model), VideoConfig(args.model, videos, root / "识别结果", 0.1, 320))
+        classes = []
+        query = Job(str(args.model))
+        query.classes_ready.connect(classes.append)
+        query.failed.connect(errors.append)
+        query.run()
+        assert not errors and len(classes) == 1, errors
+        mapping = {source: target for target, source in enumerate(sorted(classes[0]))}
+        output_names = {target: f"复核_{classes[0][source]}" for source, target in mapping.items()}
+        job = Job(str(args.model), VideoConfig(
+            args.model, videos, root / "识别结果", 0.1, 320,
+            old_class_names=classes[0], new_class_names=output_names, class_map=mapping,
+        ))
         job.progress.connect(lambda done, total, _message: progress_events.append((done, total)))
         job.completed.connect(results.append)
         job.failed.connect(errors.append)
@@ -67,7 +79,9 @@ def main() -> int:
         images = list((summary.run_dir / "images" / "train").glob("*.jpg"))
         labels = list((summary.run_dir / "labels" / "train").glob("*.txt"))
         assert len(images) == len(labels) == summary.saved_images
-        assert (summary.run_dir / "data.yaml").is_file()
+        metadata = (summary.run_dir / "data.yaml").read_text(encoding="utf-8")
+        assert all(f"{target}: {json.dumps(name, ensure_ascii=False)}" in metadata
+                   for target, name in output_names.items())
         assert (summary.run_dir / "train.txt").is_file()
         if images:
             assert summary.zip_path and summary.zip_path.is_file()

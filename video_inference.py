@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 import re
 import sys
 import traceback
@@ -24,6 +25,9 @@ class VideoConfig:
     image_size: int = 640
     save_dataset: bool = True
     save_interval_seconds: float = 1.0
+    old_class_names: dict[int, str] | None = None
+    new_class_names: dict[int, str] | None = None
+    class_map: dict[int, int] | None = None
 
 
 @dataclass
@@ -45,6 +49,8 @@ def run_videos(
     should_cancel: Callable[[], bool] | None = None,
 ) -> VideoSummary:
     import cv2
+    import numpy as np
+    from PIL import Image, ImageFont
     from ultralytics import YOLO
 
     model_path = config.model_path.expanduser().resolve()
@@ -70,11 +76,24 @@ def run_videos(
     if model.task != "detect":
         raise ValueError(f"当前仅支持目标检测模型，实际模型任务为: {model.task}")
     from yolo_auto_annotate import (
-        _label_text, _make_cvat_zip, _model_names, _write_metadata, extract_annotations,
+        _label_text, _make_cvat_zip, _model_names, _write_metadata, draw_annotations,
+        extract_annotations,
     )
     names = _model_names(model.names)
-    mapping = {class_id: class_id for class_id in names}
-    thresholds = {class_id: config.confidence for class_id in names}
+    if config.old_class_names is not None and config.old_class_names != names:
+        raise ValueError("模型类别已改变，请重新读取类别")
+    mapping = config.class_map
+    output_names = config.new_class_names
+    if mapping is None and output_names is None:
+        mapping = {class_id: index for index, class_id in enumerate(sorted(names))}
+        output_names = {target: names[source] for source, target in mapping.items()}
+    if (not mapping or not output_names or mapping.keys() - names.keys()
+            or set(mapping.values()) != output_names.keys()
+            or set(output_names) != set(range(len(output_names)))):
+        raise ValueError("视频输出类别或类别映射无效")
+    selected_classes = sorted(mapping)
+    thresholds = dict.fromkeys(mapping, config.confidence)
+    fonts_dir = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
     output_root.mkdir(parents=True, exist_ok=True)
     run_dir = output_root / datetime.now().strftime("video_run_%Y%m%d_%H%M%S_%f")
     run_dir.mkdir(exist_ok=False)
@@ -118,6 +137,11 @@ def run_videos(
             estimated_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
             if width <= 0 or height <= 0 or not math.isfinite(fps) or fps <= 0:
                 raise RuntimeError("无法读取视频尺寸或帧率")
+            font_size = max(14, round(min(width, height) / 40))
+            try:
+                font = ImageFont.truetype(str(fonts_dir / "msyh.ttc"), font_size)
+            except OSError:
+                font = ImageFont.load_default()
             while True:
                 if should_cancel and should_cancel():
                     cancelled = True
@@ -128,7 +152,7 @@ def run_videos(
                 frames += 1
                 result = model.predict(
                     frame, conf=config.confidence, imgsz=config.image_size,
-                    verbose=False, save=False,
+                    classes=selected_classes, verbose=False, save=False,
                 )[0]
                 annotations = extract_annotations(result, mapping, thresholds)
                 detected = len(annotations)
@@ -144,7 +168,9 @@ def run_videos(
                         if not raw_writer.isOpened() or not annotated_writer.isOpened():
                             raise RuntimeError("无法创建结果视频；请检查输出目录和 MP4 编码支持")
                     raw_writer.write(frame)
-                    annotated_writer.write(result.plot())
+                    canvas = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                    draw_annotations(canvas, annotations, output_names, font)
+                    annotated_writer.write(cv2.cvtColor(np.asarray(canvas), cv2.COLOR_RGB2BGR))
                     kept_frames += 1
                 if config.save_dataset and detected and (
                     last_saved_frame is None
@@ -205,7 +231,7 @@ def run_videos(
 
     zip_path = None
     if config.save_dataset:
-        _write_metadata(run_dir, image_lines, names)
+        _write_metadata(run_dir, image_lines, output_names)
         if total_saved:
             zip_path = _make_cvat_zip(run_dir)
     return VideoSummary(run_dir, len(videos), succeeded, failed, box_count, cancelled,

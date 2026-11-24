@@ -231,11 +231,17 @@ def _label_text(annotations) -> str:
 
 def _save_preview(source: Path, target: Path, annotations,
                   new_class_names: dict[int, str] | None = None) -> None:
-    from PIL import Image, ImageDraw, ImageOps
+    from PIL import Image, ImageOps
 
     with Image.open(source) as opened:
         canvas = ImageOps.exif_transpose(opened).convert("RGB")
-    new_class_names = new_class_names or NEW_CLASS_NAMES
+    draw_annotations(canvas, annotations, new_class_names or NEW_CLASS_NAMES)
+    canvas.save(target, format="JPEG", quality=90)
+
+
+def draw_annotations(canvas, annotations, class_names: dict[int, str], font=None) -> None:
+    from PIL import ImageDraw
+
     draw = ImageDraw.Draw(canvas)
     width, height = canvas.size
     line_width = max(2, round(min(width, height) / 300))
@@ -243,10 +249,9 @@ def _save_preview(source: Path, target: Path, annotations,
         rect = ((x - w / 2) * width, (y - h / 2) * height,
                 (x + w / 2) * width, (y + h / 2) * height)
         draw.rectangle(rect, outline="#ff3030", width=line_width)
-        caption = f"{new_class_names[cls]} {confidence:.2f}"
-        text_y = max(0, int(rect[1]) - 16)
-        draw.text((int(rect[0]) + 2, text_y), caption, fill="#ff3030")
-    canvas.save(target, format="JPEG", quality=90)
+        caption = f"{class_names[cls]} {confidence:.2f}"
+        text_y = max(0, int(rect[1]) - (font.size + 2 if font else 16))
+        draw.text((int(rect[0]) + 2, text_y), caption, fill="#ff3030", font=font)
 
 
 def _write_metadata(run_dir: Path, image_lines: list[str],

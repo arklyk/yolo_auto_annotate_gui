@@ -18,10 +18,10 @@ from video_inference import VideoConfig, run_videos  # noqa: E402
 
 
 class FakeBoxes:
-    def __init__(self, detected: bool):
-        self.cls = np.array([0] if detected else [])
-        self.conf = np.array([0.9] if detected else [])
-        self.xywhn = np.array([[0.5, 0.5, 0.25, 0.25]] if detected else []).reshape(-1, 4)
+    def __init__(self, class_id: int):
+        self.cls = np.array([class_id])
+        self.conf = np.array([0.9])
+        self.xywhn = np.array([[0.5, 0.5, 0.25, 0.25]])
 
     def __len__(self):
         return len(self.cls)
@@ -29,13 +29,12 @@ class FakeBoxes:
 
 class FakeModel:
     task = "detect"
-    names = {0: "object"}
+    names = {0: "ignored", 1: "object"}
 
-    def predict(self, frame, **_):
-        detected = bool(frame.mean() > 100)
-        plotted = frame.copy()
-        plotted[:10, :10] = (0, 0, 255)
-        return [SimpleNamespace(boxes=FakeBoxes(detected), plot=lambda: plotted)]
+    def predict(self, frame, *, classes, **_):
+        assert classes == [1]
+        # Return an unselected box on dark frames to also check export-side filtering.
+        return [SimpleNamespace(boxes=FakeBoxes(int(frame.mean() > 100)))]
 
 
 def make_video(path: Path, bright_frames: set[int], count: int = 10) -> None:
@@ -73,7 +72,8 @@ def main() -> None:
         original_bytes = mixed.read_bytes()
         events: list[tuple[int, int, str]] = []
 
-        summary = run_videos(VideoConfig(model, [mixed, empty], root / "filtered"),
+        selection = dict(class_map={1: 0}, new_class_names={0: "保留目标"})
+        summary = run_videos(VideoConfig(model, [mixed, empty], root / "filtered", **selection),
                              lambda done, total, message: events.append((done, total, message)))
         assert (summary.succeeded, summary.failed, summary.kept_frames, summary.saved_images) == (2, 0, 4, 2)
         assert mixed.read_bytes() == original_bytes
@@ -86,7 +86,8 @@ def main() -> None:
         raw_frames, annotated_frames = video_frames(raw), video_frames(annotated)
         assert len(raw_frames) == len(annotated_frames) == 4
         assert np.all(raw_frames[0][0, 0] > 200)
-        assert annotated_frames[0][0, 0, 2] > annotated_frames[0][0, 0, 0] + 100
+        blue, _, red = annotated_frames[0][18, 24].astype(int)
+        assert red > blue + 80
 
         images = sorted((summary.run_dir / "images" / "train").glob("*.jpg"))
         labels = sorted((summary.run_dir / "labels" / "train").glob("*.txt"))
@@ -98,7 +99,7 @@ def main() -> None:
         assert (summary.run_dir / "train.txt").read_text().splitlines() == [
             f"images/train/{path.name}" for path in images
         ]
-        assert '0: "object"' in (summary.run_dir / "data.yaml").read_text()
+        assert '0: "保留目标"' in (summary.run_dir / "data.yaml").read_text(encoding="utf-8")
         assert summary.zip_path and summary.zip_path.is_file()
         with zipfile.ZipFile(summary.zip_path) as archive:
             assert archive.testzip() is None
@@ -109,7 +110,7 @@ def main() -> None:
             }
 
         all_frames = run_videos(VideoConfig(
-            model, [mixed], root / "all_frames", save_interval_seconds=0,
+            model, [mixed], root / "all_frames", save_interval_seconds=0, **selection,
         ))
         assert all_frames.saved_images == 4
 
@@ -120,7 +121,7 @@ def main() -> None:
             if "已检测 2 帧" in message:
                 cancel = True
 
-        cancelled = run_videos(VideoConfig(model, [mixed], root / "cancel"),
+        cancelled = run_videos(VideoConfig(model, [mixed], root / "cancel", **selection),
                                progress, lambda: cancel)
         assert cancelled.cancelled and cancelled.succeeded == 0
         assert not list(cancelled.run_dir.glob("*.mp4"))
